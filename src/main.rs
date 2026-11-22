@@ -111,6 +111,9 @@ enum QueuedOsd {
     },
     WaterReminder,
     TodoReminder,
+    UpdateAvailable {
+        version: String,
+    },
 }
 
 fn queued_osd_from_bt(ev: pages::BtPopupEvent) -> QueuedOsd {
@@ -221,6 +224,14 @@ fn activate_queued_osd(
             springs.set_osd_wide(true);
             springs.set_osd_active(true);
         }
+        QueuedOsd::UpdateAvailable { version } => {
+            widgets.update_available_ver = version;
+            widgets.osd_alert_progress = 1.0;
+            *active_osd = CollapsedOsdKind::UpdateAvailable;
+            *osd_deadline = Some(now + Duration::from_secs(12));
+            springs.set_osd_wide(true);
+            springs.set_osd_active(true);
+        }
     }
 }
 
@@ -242,7 +253,10 @@ fn enqueue_or_show_osd(
         QueuedOsd::Charging { .. } => cfg.osd_charging,
         QueuedOsd::Notification(_) => cfg.osd_notifications,
         QueuedOsd::MicInUse { .. } => cfg.osd_mic_in_use,
-        QueuedOsd::FocusAlert { .. } | QueuedOsd::WaterReminder | QueuedOsd::TodoReminder => true,
+        QueuedOsd::FocusAlert { .. }
+        | QueuedOsd::WaterReminder
+        | QueuedOsd::TodoReminder
+        | QueuedOsd::UpdateAvailable { .. } => true,
     };
     if !enabled || expanded {
         return;
@@ -407,6 +421,7 @@ fn run() -> windows::core::Result<()> {
     let update_checker = updater::UpdateChecker::new(window.hwnd());
     let app_started = Instant::now();
     let mut auto_update_checked = false;
+    let mut update_osd_shown = false;
     let mut last_seen_update_status = updater::UpdateStatus::Idle;
     let mut ai_card_visible = false;
     let mut ai_card_auto_hide: Option<Instant> = None;
@@ -1695,6 +1710,7 @@ fn run() -> windows::core::Result<()> {
                                     CollapsedOsdKind::FocusAlert { .. }
                                         | CollapsedOsdKind::WaterReminder
                                         | CollapsedOsdKind::TodoReminder
+                                        | CollapsedOsdKind::UpdateAvailable
                                 );
                             if is_interactive_osd {
                                 let (dismiss_r, cta_r) = renderer::interactive_osd_button_rects(
@@ -1740,10 +1756,38 @@ fn run() -> windows::core::Result<()> {
                                                     + Duration::from_secs(AUTO_RING_OVERRIDE_SECS),
                                             ));
                                         }
+                                        CollapsedOsdKind::UpdateAvailable => {
+                                            if let updater::UpdateStatus::Available {
+                                                version,
+                                                url,
+                                                download_url,
+                                            } = update_checker.status()
+                                            {
+                                                if let Some(dl) = download_url {
+                                                    update_checker
+                                                        .install_update_async(version, dl);
+                                                } else {
+                                                    updater::open_external_url(&url);
+                                                }
+                                            }
+                                        }
                                         _ => {}
                                     }
                                     osd_deadline = None;
                                     springs.set_osd_active(false);
+                                    force_render = true;
+                                } else if active_osd == CollapsedOsdKind::UpdateAvailable {
+                                    osd_deadline = None;
+                                    active_osd = CollapsedOsdKind::None;
+                                    springs.set_osd_active(false);
+                                    settings_win.open_or_focus(build_settings_snapshot(
+                                        &cfg,
+                                        &pomodoro,
+                                        &water,
+                                        &todo,
+                                        &shelf_store,
+                                        update_checker.status(),
+                                    ));
                                     force_render = true;
                                 } else {
                                     let target_p = match active_osd {
@@ -2464,6 +2508,27 @@ fn run() -> windows::core::Result<()> {
             let cur_upd = update_checker.status();
             let upd_changed = cur_upd != last_seen_update_status;
             if upd_changed {
+                if !update_osd_shown {
+                    if let updater::UpdateStatus::Available { ref version, .. } = cur_upd {
+                        update_osd_shown = true;
+                        has_notification = true;
+                        osd_monitors::play_eave_chime();
+                        enqueue_or_show_osd(
+                            QueuedOsd::UpdateAvailable {
+                                version: version.clone(),
+                            },
+                            &cfg,
+                            Instant::now(),
+                            hover_sm.expanded,
+                            &mut widgets,
+                            &mut active_osd,
+                            &mut osd_deadline,
+                            &mut osd_queue,
+                            &mut springs,
+                        );
+                        force_render = true;
+                    }
+                }
                 last_seen_update_status = cur_upd;
                 if settings_win.is_open() {
                     settings_win.sync_snapshot(build_settings_snapshot(
@@ -2744,6 +2809,7 @@ fn run() -> windows::core::Result<()> {
             CollapsedOsdKind::FocusAlert { .. }
                 | CollapsedOsdKind::WaterReminder
                 | CollapsedOsdKind::TodoReminder
+                | CollapsedOsdKind::UpdateAvailable
         ) && osd_deadline.is_some();
         let ai_blocks_hover =
             matches!(widgets.ai.phase, ai::AiPhase::Input | ai::AiPhase::Busy) || ai_card_visible;
@@ -3077,6 +3143,7 @@ fn run() -> windows::core::Result<()> {
                 CollapsedOsdKind::FocusAlert { .. }
                     | CollapsedOsdKind::WaterReminder
                     | CollapsedOsdKind::TodoReminder
+                    | CollapsedOsdKind::UpdateAvailable
             );
             if is_alert {
                 if hover_sm.hovered {
@@ -3331,6 +3398,7 @@ fn run() -> windows::core::Result<()> {
                     | CollapsedOsdKind::FocusAlert { .. }
                     | CollapsedOsdKind::WaterReminder
                     | CollapsedOsdKind::TodoReminder
+                    | CollapsedOsdKind::UpdateAvailable
             ) && osd_deadline.is_some())
             || springs.mascot_idle_presence.value() > 0.01
             || springs.ai_wave_open.value() > 0.01

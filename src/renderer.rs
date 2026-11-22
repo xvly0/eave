@@ -97,6 +97,7 @@ pub enum CollapsedOsdKind {
     },
     WaterReminder,
     TodoReminder,
+    UpdateAvailable,
 }
 
 pub fn interactive_osd_button_rects_at(body_right: f32, notch_h: f32) -> (D2D_RECT_F, D2D_RECT_F) {
@@ -7963,6 +7964,27 @@ impl NotchRenderer {
                         (0.26, 0.92, 0.50),
                     );
                 }
+                CollapsedOsdKind::UpdateAvailable => {
+                    let sub = if state.widgets.update_available_ver.is_empty() {
+                        "A new version of Eave is ready".to_string()
+                    } else {
+                        format!("Eave v{} is ready", state.widgets.update_available_ver)
+                    };
+                    self.draw_interactive_alert_osd(
+                        body_left,
+                        body_right,
+                        idle_h,
+                        springs.phase_secs(),
+                        osd_a,
+                        state.widgets.osd_alert_progress,
+                        3,
+                        "Update available",
+                        &sub,
+                        "Update",
+                        (0.14, 0.56, 1.0),
+                        (0.36, 0.80, 1.0),
+                    );
+                }
             }
         }
     }
@@ -8084,7 +8106,7 @@ impl NotchRenderer {
                 &self.solid_brush,
                 1.85,
             );
-        } else {
+        } else if alert_kind == 2 {
             icons::draw_calendar_badge_icon(
                 &self.d2d_context,
                 badge_cx,
@@ -8092,6 +8114,47 @@ impl NotchRenderer {
                 16.5,
                 &self.solid_brush,
                 1.5,
+            );
+        } else {
+            // Crisp download arrow + tray bar for UpdateAvailable
+            let stroke = ID2D1Factory::CreateStrokeStyle(
+                &self.d2d_factory,
+                &D2D1_STROKE_STYLE_PROPERTIES {
+                    startCap: D2D1_CAP_STYLE_ROUND,
+                    endCap: D2D1_CAP_STYLE_ROUND,
+                    lineJoin: D2D1_LINE_JOIN_ROUND,
+                    ..Default::default()
+                },
+                None,
+            )
+            .ok();
+            self.d2d_context.DrawLine(
+                D2D_POINT_2F { x: badge_cx, y: cy - 6.8 },
+                D2D_POINT_2F { x: badge_cx, y: cy + 2.8 },
+                &self.solid_brush,
+                2.0,
+                stroke.as_ref(),
+            );
+            self.d2d_context.DrawLine(
+                D2D_POINT_2F { x: badge_cx - 4.2, y: cy - 1.2 },
+                D2D_POINT_2F { x: badge_cx, y: cy + 3.0 },
+                &self.solid_brush,
+                2.0,
+                stroke.as_ref(),
+            );
+            self.d2d_context.DrawLine(
+                D2D_POINT_2F { x: badge_cx + 4.2, y: cy - 1.2 },
+                D2D_POINT_2F { x: badge_cx, y: cy + 3.0 },
+                &self.solid_brush,
+                2.0,
+                stroke.as_ref(),
+            );
+            self.d2d_context.DrawLine(
+                D2D_POINT_2F { x: badge_cx - 5.4, y: cy + 6.4 },
+                D2D_POINT_2F { x: badge_cx + 5.4, y: cy + 6.4 },
+                &self.solid_brush,
+                2.0,
+                stroke.as_ref(),
             );
         }
 
