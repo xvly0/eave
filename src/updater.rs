@@ -1,9 +1,14 @@
 use std::ffi::OsStr;
+use std::fs;
 use std::os::windows::ffi::OsStrExt;
+use std::path::PathBuf;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
+
 use windows::core::{HSTRING, PCWSTR};
 use windows::Foundation::Uri;
+use windows::Storage::Streams::DataReader;
 use windows::Web::Http::HttpClient;
 use windows::Win32::Foundation::SYSTEMTIME;
 use windows::Win32::UI::Shell::ShellExecuteW;
@@ -31,7 +36,12 @@ pub enum UpdateStatus {
     Available {
         version: String,
         url: String,
+        download_url: Option<String>,
     },
+    Downloading {
+        version: String,
+    },
+    Restarting,
     Error(String),
 }
 
@@ -53,13 +63,15 @@ impl UpdateChecker {
             .unwrap_or(UpdateStatus::Idle)
     }
 
-    /// Starts an asynchronous check against `https://api.github.com/repos/{repo}/releases/latest`.
     pub fn check_async(&self, repo: &str) {
         {
             let Ok(mut guard) = self.status.lock() else {
                 return;
             };
-            if matches!(*guard, UpdateStatus::Checking) {
+            if matches!(
+                *guard,
+                UpdateStatus::Checking | UpdateStatus::Downloading { .. } | UpdateStatus::Restarting
+            ) {
                 return;
             }
             *guard = UpdateStatus::Checking;
@@ -74,6 +86,125 @@ impl UpdateChecker {
             }
         });
     }
+
+    pub fn install_update_async(&self, version: String, download_url: String) {
+        {
+            let Ok(mut guard) = self.status.lock() else {
+                return;
+            };
+            if matches!(
+                *guard,
+                UpdateStatus::Downloading { .. } | UpdateStatus::Restarting
+            ) {
+                return;
+            }
+            *guard = UpdateStatus::Downloading {
+                version: version.clone(),
+            };
+        }
+
+        let status_arc = Arc::clone(&self.status);
+        thread::spawn(move || match download_and_replace_self(&download_url) {
+            Ok(()) => {
+                if let Ok(mut guard) = status_arc.lock() {
+                    *guard = UpdateStatus::Restarting;
+                }
+                std::process::exit(0);
+            }
+            Err(msg) => {
+                if let Ok(mut guard) = status_arc.lock() {
+                    *guard = UpdateStatus::Error(msg);
+                }
+            }
+        });
+    }
+}
+
+/// Removes any leftover `eave.exe.old` renamed during a previous self-update.
+pub fn cleanup_old_binary() {
+    if let Ok(exe) = std::env::current_exe() {
+        let old = old_backup_path(&exe);
+        if old.exists() {
+            let _ = fs::remove_file(old);
+        }
+    }
+}
+
+fn old_backup_path(exe: &std::path::Path) -> PathBuf {
+    let mut s = exe.as_os_str().to_os_string();
+    s.push(".old");
+    PathBuf::from(s)
+}
+
+fn new_staging_path(exe: &std::path::Path) -> PathBuf {
+    let mut s = exe.as_os_str().to_os_string();
+    s.push(".new");
+    PathBuf::from(s)
+}
+
+fn download_and_replace_self(download_url: &str) -> Result<(), String> {
+    let exe_path = std::env::current_exe().map_err(|_| "Cannot locate current executable".to_string())?;
+    let bytes = http_download_bytes(download_url)?;
+    if bytes.len() < 100_000 || &bytes[..2] != b"MZ" {
+        return Err("Downloaded file is not a valid Windows executable".to_string());
+    }
+
+    let new_path = new_staging_path(&exe_path);
+    let old_path = old_backup_path(&exe_path);
+    fs::write(&new_path, &bytes).map_err(|_| "Cannot write update file next to eave.exe".to_string())?;
+
+    if old_path.exists() {
+        let _ = fs::remove_file(&old_path);
+    }
+    // Windows allows renaming a running executable even though it cannot be unlinked in place.
+    if let Err(_) = fs::rename(&exe_path, &old_path) {
+        let _ = fs::remove_file(&new_path);
+        return Err("Cannot replace running executable (check folder permissions)".to_string());
+    }
+    if let Err(_) = fs::rename(&new_path, &exe_path) {
+        let _ = fs::rename(&old_path, &exe_path);
+        let _ = fs::remove_file(&new_path);
+        return Err("Failed to finalize update binary".to_string());
+    }
+
+    Command::new(&exe_path)
+        .spawn()
+        .map_err(|_| "Updated binary saved, please relaunch Eave".to_string())?;
+    Ok(())
+}
+
+fn http_download_bytes(url: &str) -> Result<Vec<u8>, String> {
+    let client = HttpClient::new().map_err(|_| "HTTP client unavailable".to_string())?;
+    if let Ok(headers) = client.DefaultRequestHeaders() {
+        let _ = headers.Append(
+            &HSTRING::from("User-Agent"),
+            &HSTRING::from(format!("{APP_NAME}/{CURRENT_VERSION}")),
+        );
+    }
+    let uri = Uri::CreateUri(&HSTRING::from(url)).map_err(|_| "Invalid download URL".to_string())?;
+    let resp = client
+        .GetAsync(&uri)
+        .map_err(|_| "Download request failed".to_string())?
+        .get()
+        .map_err(|_| "Could not download update from GitHub".to_string())?;
+    let code = resp.StatusCode().map(|s| s.0).unwrap_or(0);
+    if !(200..300).contains(&code) {
+        return Err(format!("Download failed (HTTP {code})"));
+    }
+    let buf = resp
+        .Content()
+        .map_err(|_| "Empty response".to_string())?
+        .ReadAsBufferAsync()
+        .map_err(|_| "Read failed".to_string())?
+        .get()
+        .map_err(|_| "Failed reading download stream".to_string())?;
+    let len = buf.Length().map_err(|_| "Invalid buffer length".to_string())? as usize;
+    let reader = DataReader::FromBuffer(&buf).map_err(|_| "Buffer reader failed".to_string())?;
+    let mut out = vec![0u8; len];
+    reader
+        .ReadBytes(&mut out)
+        .map_err(|_| "Failed copying downloaded bytes".to_string())?;
+    Ok(out)
 }
 
 pub fn sanitize_repo(repo: &str) -> String {
@@ -160,11 +291,13 @@ fn fetch_latest_release(repo: &str) -> UpdateStatus {
     };
     let html_url = json_extract_string(&body, "html_url")
         .unwrap_or_else(|| format!("https://github.com/{repo}/releases/latest"));
+    let download_url = json_extract_exe_download_url(&body);
 
     if is_newer_version(&tag, CURRENT_VERSION) {
         UpdateStatus::Available {
             version: tag.trim_start_matches('v').to_string(),
             url: html_url,
+            download_url,
         }
     } else {
         UpdateStatus::UpToDate {
@@ -193,11 +326,29 @@ pub fn is_newer_version(remote: &str, local: &str) -> bool {
     }
 }
 
+fn json_extract_exe_download_url(json: &str) -> Option<String> {
+    let needle = "\"browser_download_url\"";
+    let mut rest = json;
+    while let Some(pos) = rest.find(needle) {
+        let after = &rest[pos + needle.len()..];
+        if let Some(val) = extract_json_colon_string(after) {
+            if val.to_ascii_lowercase().ends_with(".exe") {
+                return Some(val);
+            }
+        }
+        rest = after;
+    }
+    None
+}
+
 fn json_extract_string(json: &str, key: &str) -> Option<String> {
     let needle = format!("\"{key}\"");
     let start = json.find(&needle)? + needle.len();
-    let rest = json[start..].trim_start();
-    let rest = rest.strip_prefix(':')?.trim_start();
+    extract_json_colon_string(&json[start..])
+}
+
+fn extract_json_colon_string(slice: &str) -> Option<String> {
+    let rest = slice.trim_start().strip_prefix(':')?.trim_start();
     let rest = rest.strip_prefix('"')?;
     let mut out = String::new();
     let mut chars = rest.chars();
@@ -236,11 +387,15 @@ mod tests {
 
     #[test]
     fn json_extractor_parses_github_release_fields() {
-        let sample = r#"{"tag_name": "v0.3.2", "html_url": "https://github.com/acme/eave/releases/tag/v0.3.2"}"#;
+        let sample = r#"{"tag_name": "v0.3.2", "html_url": "https://github.com/acme/eave/releases/tag/v0.3.2", "assets": [{"browser_download_url": "https://github.com/acme/eave/releases/download/v0.3.2/eave.exe"}]}"#;
         assert_eq!(json_extract_string(sample, "tag_name").as_deref(), Some("v0.3.2"));
         assert_eq!(
             json_extract_string(sample, "html_url").as_deref(),
             Some("https://github.com/acme/eave/releases/tag/v0.3.2")
+        );
+        assert_eq!(
+            json_extract_exe_download_url(sample).as_deref(),
+            Some("https://github.com/acme/eave/releases/download/v0.3.2/eave.exe")
         );
     }
 

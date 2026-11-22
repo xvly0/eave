@@ -542,9 +542,11 @@ impl Config {
                     }
                 }
                 "update_repo" => {
-                    let r = val.trim();
-                    if !r.is_empty() {
-                        cfg.update_repo = crate::updater::sanitize_repo(r);
+                    let r = crate::updater::sanitize_repo(val);
+                    if r.eq_ignore_ascii_case("eave-app/eave") {
+                        cfg.update_repo = crate::updater::DEFAULT_GITHUB_REPO.to_string();
+                    } else if !r.is_empty() {
+                        cfg.update_repo = r;
                     }
                 }
                 "todo_remind_start" => {

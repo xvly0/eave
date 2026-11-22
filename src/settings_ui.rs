@@ -105,6 +105,10 @@ pub enum SettingsAction {
     OpenConfigFile,
     ResetDefaults,
     CheckForUpdates,
+    InstallUpdate {
+        version: String,
+        download_url: String,
+    },
     OpenUpdateUrl(String),
     OpenGitHubRepo,
     TriggerSmartOcr,
@@ -1488,11 +1492,21 @@ impl SettingsInner {
                 "open_cfg" => self.actions.push(SettingsAction::OpenConfigFile),
                 "check_updates" => self.actions.push(SettingsAction::CheckForUpdates),
                 "download_update" => {
-                    if let crate::updater::UpdateStatus::Available { ref url, .. } =
-                        self.snap.update_status
+                    if let crate::updater::UpdateStatus::Available {
+                        ref version,
+                        ref url,
+                        ref download_url,
+                    } = self.snap.update_status
                     {
-                        self.actions
-                            .push(SettingsAction::OpenUpdateUrl(url.clone()));
+                        if let Some(dl) = download_url {
+                            self.actions.push(SettingsAction::InstallUpdate {
+                                version: version.clone(),
+                                download_url: dl.clone(),
+                            });
+                        } else {
+                            self.actions
+                                .push(SettingsAction::OpenUpdateUrl(url.clone()));
+                        }
                     }
                 }
                 "open_github" => self.actions.push(SettingsAction::OpenGitHubRepo),
@@ -3264,12 +3278,39 @@ impl SettingsInner {
                                 "check_updates",
                                 (0.22, 0.86, 0.44),
                             ),
-                            crate::updater::UpdateStatus::Available { version, .. } => (
+                            crate::updater::UpdateStatus::Available {
+                                version,
+                                download_url,
+                                ..
+                            } => (
                                 format!("Update available: v{version}"),
-                                "A newer release is ready on GitHub".to_string(),
-                                "Download",
+                                if download_url.is_some() {
+                                    "Click Update now to download and restart automatically"
+                                        .to_string()
+                                } else {
+                                    "A newer release is ready on GitHub".to_string()
+                                },
+                                if download_url.is_some() {
+                                    "Update now"
+                                } else {
+                                    "Download"
+                                },
                                 "download_update",
                                 (0.24, 0.66, 1.0),
+                            ),
+                            crate::updater::UpdateStatus::Downloading { version } => (
+                                format!("Downloading v{version}..."),
+                                "Replacing eave.exe and restarting automatically".to_string(),
+                                "Updating...",
+                                "download_update",
+                                (0.30, 0.68, 1.0),
+                            ),
+                            crate::updater::UpdateStatus::Restarting => (
+                                "Restarting Eave...".to_string(),
+                                "Applying update".to_string(),
+                                "Restarting...",
+                                "download_update",
+                                (0.22, 0.86, 0.44),
                             ),
                             crate::updater::UpdateStatus::Error(err) => (
                                 "Update check failed".to_string(),

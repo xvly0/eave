@@ -277,6 +277,7 @@ fn main() {
 }
 
 fn run() -> windows::core::Result<()> {
+    updater::cleanup_old_binary();
     let first_run = !Config::resolve_path().exists();
     let (mut cfg, cfg_path) = Config::load_or_create();
     if first_run {
@@ -2434,6 +2435,12 @@ fn run() -> windows::core::Result<()> {
                     }
                     SettingsAction::CheckForUpdates => {
                         update_checker.check_async(&cfg.update_repo);
+                    }
+                    SettingsAction::InstallUpdate {
+                        version,
+                        download_url,
+                    } => {
+                        update_checker.install_update_async(version, download_url);
                     }
                     SettingsAction::OpenUpdateUrl(url) => {
                         updater::open_external_url(&url);
