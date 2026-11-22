@@ -10,9 +10,10 @@ use windows::core::{HSTRING, PCWSTR};
 use windows::Foundation::Uri;
 use windows::Storage::Streams::DataReader;
 use windows::Web::Http::HttpClient;
-use windows::Win32::Foundation::SYSTEMTIME;
+use windows::Win32::Foundation::{HWND, LPARAM, SYSTEMTIME, WPARAM};
+use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
 use windows::Win32::UI::Shell::ShellExecuteW;
-use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, SW_SHOWNORMAL, WM_NULL};
 
 pub const APP_NAME: &str = "Eave";
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -47,12 +48,14 @@ pub enum UpdateStatus {
 
 pub struct UpdateChecker {
     status: Arc<Mutex<UpdateStatus>>,
+    notify_hwnd: isize,
 }
 
 impl UpdateChecker {
-    pub fn new() -> Self {
+    pub fn new(hwnd: HWND) -> Self {
         Self {
             status: Arc::new(Mutex::new(UpdateStatus::Idle)),
+            notify_hwnd: hwnd.0 as isize,
         }
     }
 
@@ -79,10 +82,20 @@ impl UpdateChecker {
 
         let repo_clean = sanitize_repo(repo);
         let status_arc = Arc::clone(&self.status);
+        let wake_hwnd = self.notify_hwnd;
         thread::spawn(move || {
+            let ro_ok = unsafe { RoInitialize(RO_INIT_MULTITHREADED).is_ok() };
             let result = fetch_latest_release(&repo_clean);
+            if ro_ok {
+                unsafe { RoUninitialize() };
+            }
             if let Ok(mut guard) = status_arc.lock() {
                 *guard = result;
+            }
+            if wake_hwnd != 0 {
+                unsafe {
+                    let _ = PostMessageW(HWND(wake_hwnd as *mut _), WM_NULL, WPARAM(0), LPARAM(0));
+                }
             }
         });
     }
@@ -104,16 +117,30 @@ impl UpdateChecker {
         }
 
         let status_arc = Arc::clone(&self.status);
-        thread::spawn(move || match download_and_replace_self(&download_url) {
-            Ok(()) => {
-                if let Ok(mut guard) = status_arc.lock() {
-                    *guard = UpdateStatus::Restarting;
-                }
-                std::process::exit(0);
+        let wake_hwnd = self.notify_hwnd;
+        thread::spawn(move || {
+            let ro_ok = unsafe { RoInitialize(RO_INIT_MULTITHREADED).is_ok() };
+            let res = download_and_replace_self(&download_url);
+            if ro_ok {
+                unsafe { RoUninitialize() };
             }
-            Err(msg) => {
-                if let Ok(mut guard) = status_arc.lock() {
-                    *guard = UpdateStatus::Error(msg);
+            match res {
+                Ok(()) => {
+                    if let Ok(mut guard) = status_arc.lock() {
+                        *guard = UpdateStatus::Restarting;
+                    }
+                    std::process::exit(0);
+                }
+                Err(msg) => {
+                    if let Ok(mut guard) = status_arc.lock() {
+                        *guard = UpdateStatus::Error(msg);
+                    }
+                    if wake_hwnd != 0 {
+                        unsafe {
+                            let _ =
+                                PostMessageW(HWND(wake_hwnd as *mut _), WM_NULL, WPARAM(0), LPARAM(0));
+                        }
+                    }
                 }
             }
         });

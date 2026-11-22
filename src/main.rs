@@ -404,7 +404,7 @@ fn run() -> windows::core::Result<()> {
     let mut mic_usage_mon = osd_monitors::MicUsageMonitor::new();
     let mut network_mon = osd_monitors::NetworkMonitor::new();
     let mut ai_svc = ai::AiService::new(window.hwnd());
-    let update_checker = updater::UpdateChecker::new();
+    let update_checker = updater::UpdateChecker::new(window.hwnd());
     let app_started = Instant::now();
     let mut auto_update_checked = false;
     let mut last_seen_update_status = updater::UpdateStatus::Idle;
