@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="eave.png" alt="Eave icon" width="96" height="96" />
+  <img src="assets/eave.png" alt="Eave icon" width="96" height="96" />
 </p>
 
 <h1 align="center">Eave</h1>
