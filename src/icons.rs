@@ -1671,11 +1671,11 @@ pub unsafe fn draw_calendar_badge_icon(
         return;
     };
     let stroke = create_round_stroke(&factory);
-    let sw = stroke_w.max(1.25);
-    let half_w = size * 0.40;
-    let top = cy - size * 0.30;
-    let bottom = cy + size * 0.44;
-    let rx = size * 0.18;
+    let sw = stroke_w.max(1.2);
+    let half_w = size * 0.39;
+    let top = cy - size * 0.28;
+    let bottom = cy + size * 0.42;
+    let rx = size * 0.16;
 
     let frame = D2D1_ROUNDED_RECT {
         rect: D2D_RECT_F {
@@ -1689,75 +1689,35 @@ pub unsafe fn draw_calendar_badge_icon(
     };
     ctx.DrawRoundedRectangle(&frame, brush, sw, stroke.as_ref());
 
-    let header_bottom = top + size * 0.24;
-    let header = D2D1_ROUNDED_RECT {
-        rect: D2D_RECT_F {
-            left: cx - half_w + sw * 0.25,
-            top: top + sw * 0.25,
-            right: cx + half_w - sw * 0.25,
-            bottom: header_bottom,
+    let divider_y = top + size * 0.25;
+    ctx.DrawLine(
+        D2D_POINT_2F {
+            x: cx - half_w,
+            y: divider_y,
         },
-        radiusX: rx * 0.65,
-        radiusY: rx * 0.65,
-    };
-    ctx.FillRoundedRectangle(&header, brush);
-    ctx.FillRectangle(
-        &D2D_RECT_F {
-            left: cx - half_w + sw * 0.35,
-            top: header_bottom - size * 0.08,
-            right: cx + half_w - sw * 0.35,
-            bottom: header_bottom,
+        D2D_POINT_2F {
+            x: cx + half_w,
+            y: divider_y,
         },
         brush,
+        sw,
+        stroke.as_ref(),
     );
 
     for px in [cx - size * 0.18, cx + size * 0.18] {
         ctx.DrawLine(
             D2D_POINT_2F {
                 x: px,
-                y: top - size * 0.11,
+                y: top - size * 0.14,
             },
             D2D_POINT_2F {
                 x: px,
                 y: top + size * 0.04,
             },
             brush,
-            sw * 1.1,
+            sw,
             stroke.as_ref(),
         );
-    }
-
-    let dot_r = (size * 0.052).max(0.85);
-    let cols = [cx - size * 0.19, cx, cx + size * 0.19];
-    let rows = [cy + size * 0.09, cy + size * 0.27];
-    for (r_idx, &ry) in rows.iter().enumerate() {
-        for (c_idx, &rx_pos) in cols.iter().enumerate() {
-            if r_idx == 0 && c_idx == 1 {
-                let s = dot_r * 1.35;
-                ctx.FillRoundedRectangle(
-                    &D2D1_ROUNDED_RECT {
-                        rect: D2D_RECT_F {
-                            left: rx_pos - s,
-                            top: ry - s,
-                            right: rx_pos + s,
-                            bottom: ry + s,
-                        },
-                        radiusX: s * 0.45,
-                        radiusY: s * 0.45,
-                    },
-                    brush,
-                );
-            } else {
-                ctx.FillEllipse(
-                    &D2D1_ELLIPSE {
-                        point: D2D_POINT_2F { x: rx_pos, y: ry },
-                        radiusX: dot_r,
-                        radiusY: dot_r,
-                    },
-                    brush,
-                );
-            }
-        }
     }
 }
 
