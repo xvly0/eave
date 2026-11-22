@@ -12195,23 +12195,6 @@ impl NotchRenderer {
                 brush,
                 1.35,
             );
-            let dot_a = if todo.schedule_filter || todo.has_scheduled_tasks() {
-                0.98 * stats_a
-            } else {
-                0.35 * stats_a
-            };
-            self.set_color(0.145, 0.537, 1.0, dot_a);
-            self.d2d_context.FillEllipse(
-                &D2D1_ELLIPSE {
-                    point: D2D_POINT_2F {
-                        x: cal_c.x + 9.2 * cal_s,
-                        y: cal_c.y - 9.2 * cal_s,
-                    },
-                    radiusX: 2.6 * cal_s,
-                    radiusY: 2.6 * cal_s,
-                },
-                &self.solid_brush,
-            );
 
             self.draw_text(
                 "Task Done Today",
