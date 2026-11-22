@@ -114,6 +114,7 @@ enum QueuedOsd {
     UpdateAvailable {
         version: String,
     },
+    UpdateInstalled,
 }
 
 fn queued_osd_from_bt(ev: pages::BtPopupEvent) -> QueuedOsd {
@@ -232,6 +233,13 @@ fn activate_queued_osd(
             springs.set_osd_wide(true);
             springs.set_osd_active(true);
         }
+        QueuedOsd::UpdateInstalled => {
+            *active_osd = CollapsedOsdKind::UpdateInstalled;
+            *osd_deadline = Some(now + Duration::from_millis(4200));
+            springs.set_osd_wide(false);
+            springs.set_osd_tall(true);
+            springs.set_osd_active(true);
+        }
     }
 }
 
@@ -256,7 +264,8 @@ fn enqueue_or_show_osd(
         QueuedOsd::FocusAlert { .. }
         | QueuedOsd::WaterReminder
         | QueuedOsd::TodoReminder
-        | QueuedOsd::UpdateAvailable { .. } => true,
+        | QueuedOsd::UpdateAvailable { .. }
+        | QueuedOsd::UpdateInstalled => true,
     };
     if !enabled || expanded {
         return;
@@ -291,7 +300,7 @@ fn main() {
 }
 
 fn run() -> windows::core::Result<()> {
-    updater::cleanup_old_binary();
+    let just_updated = updater::cleanup_old_binary();
     let first_run = !Config::resolve_path().exists();
     let (mut cfg, cfg_path) = Config::load_or_create();
     if first_run {
@@ -420,6 +429,7 @@ fn run() -> windows::core::Result<()> {
     let mut ai_svc = ai::AiService::new(window.hwnd());
     let update_checker = updater::UpdateChecker::new(window.hwnd());
     let app_started = Instant::now();
+    let mut pending_update_installed_osd = just_updated;
     let mut auto_update_checked = false;
     let mut update_osd_shown = false;
     let mut last_seen_update_status = updater::UpdateStatus::Idle;
@@ -2497,6 +2507,22 @@ fn run() -> windows::core::Result<()> {
                         ocr::start_screen_ocr_async();
                     }
                 }
+            }
+            if pending_update_installed_osd && app_started.elapsed() >= Duration::from_millis(750) {
+                pending_update_installed_osd = false;
+                osd_monitors::play_eave_chime();
+                enqueue_or_show_osd(
+                    QueuedOsd::UpdateInstalled,
+                    &cfg,
+                    Instant::now(),
+                    hover_sm.expanded,
+                    &mut widgets,
+                    &mut active_osd,
+                    &mut osd_deadline,
+                    &mut osd_queue,
+                    &mut springs,
+                );
+                force_render = true;
             }
             if !auto_update_checked
                 && cfg.auto_check_updates

@@ -148,13 +148,26 @@ impl UpdateChecker {
 }
 
 /// Removes any leftover `eave.exe.old` renamed during a previous self-update.
-pub fn cleanup_old_binary() {
+/// Returns `true` if a backup existed (meaning Eave just restarted from an update).
+pub fn cleanup_old_binary() -> bool {
     if let Ok(exe) = std::env::current_exe() {
         let old = old_backup_path(&exe);
         if old.exists() {
-            let _ = fs::remove_file(old);
+            for _ in 0..5 {
+                if fs::remove_file(&old).is_ok() || !old.exists() {
+                    return true;
+                }
+                thread::sleep(std::time::Duration::from_millis(40));
+            }
+            return true;
         }
     }
+    false
+}
+
+fn local_exe_size() -> Option<u64> {
+    let exe = std::env::current_exe().ok()?;
+    fs::metadata(exe).ok().map(|m| m.len())
 }
 
 fn old_backup_path(exe: &std::path::Path) -> PathBuf {
@@ -318,9 +331,21 @@ fn fetch_latest_release(repo: &str) -> UpdateStatus {
     };
     let html_url = json_extract_string(&body, "html_url")
         .unwrap_or_else(|| format!("https://github.com/{repo}/releases/latest"));
-    let download_url = json_extract_exe_download_url(&body);
+    let (download_url, remote_size) = match json_extract_exe_asset(&body) {
+        Some((u, sz)) => (Some(u), sz),
+        None => (None, None),
+    };
 
-    if is_newer_version(&tag, CURRENT_VERSION) {
+    let newer_semver = is_newer_version(&tag, CURRENT_VERSION);
+    let same_ver_rebuild = !newer_semver
+        && parse_semver(&tag).is_some()
+        && parse_semver(&tag) == parse_semver(CURRENT_VERSION)
+        && download_url.is_some()
+        && remote_size
+            .zip(local_exe_size())
+            .is_some_and(|(rs, ls)| rs > 100_000 && rs != ls);
+
+    if newer_semver || same_ver_rebuild {
         UpdateStatus::Available {
             version: tag.trim_start_matches('v').to_string(),
             url: html_url,
@@ -353,19 +378,76 @@ pub fn is_newer_version(remote: &str, local: &str) -> bool {
     }
 }
 
-fn json_extract_exe_download_url(json: &str) -> Option<String> {
-    let needle = "\"browser_download_url\"";
-    let mut rest = json;
-    while let Some(pos) = rest.find(needle) {
-        let after = &rest[pos + needle.len()..];
-        if let Some(val) = extract_json_colon_string(after) {
-            if val.to_ascii_lowercase().ends_with(".exe") {
-                return Some(val);
+fn json_extract_exe_asset(json: &str) -> Option<(String, Option<u64>)> {
+    let assets_slice = if let Some(pos) = json.find("\"assets\"") {
+        let after = &json[pos + "\"assets\"".len()..];
+        let bracket = after.find('[')?;
+        &after[bracket + 1..]
+    } else {
+        json
+    };
+
+    let bytes = assets_slice.as_bytes();
+    let mut i = 0usize;
+    let mut in_str = false;
+    let mut esc = false;
+    let mut depth = 0i32;
+    let mut obj_start: Option<usize> = None;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_str {
+            if esc {
+                esc = false;
+            } else if b == b'\\' {
+                esc = true;
+            } else if b == b'"' {
+                in_str = false;
+            }
+        } else {
+            match b {
+                b'"' => in_str = true,
+                b'{' => {
+                    if depth == 0 {
+                        obj_start = Some(i);
+                    }
+                    depth += 1;
+                }
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        if let Some(start) = obj_start.take() {
+                            let obj = &assets_slice[start..=i];
+                            if let Some(url) = json_extract_string(obj, "browser_download_url") {
+                                if url.to_ascii_lowercase().ends_with(".exe") {
+                                    let size = json_extract_u64(obj, "size");
+                                    return Some((url, size));
+                                }
+                            }
+                        }
+                    }
+                }
+                b']' if depth == 0 => break,
+                _ => {}
             }
         }
-        rest = after;
+        i += 1;
     }
     None
+}
+
+fn json_extract_u64(json: &str, key: &str) -> Option<u64> {
+    let needle = format!("\"{key}\"");
+    let start = json.find(&needle)? + needle.len();
+    let rest = json[start..].trim_start().strip_prefix(':')?.trim_start();
+    let end = rest
+        .bytes()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    if end == 0 {
+        return None;
+    }
+    rest[..end].parse().ok()
 }
 
 fn json_extract_string(json: &str, key: &str) -> Option<String> {
@@ -414,15 +496,18 @@ mod tests {
 
     #[test]
     fn json_extractor_parses_github_release_fields() {
-        let sample = r#"{"tag_name": "v0.3.2", "html_url": "https://github.com/acme/eave/releases/tag/v0.3.2", "assets": [{"browser_download_url": "https://github.com/acme/eave/releases/download/v0.3.2/eave.exe"}]}"#;
+        let sample = r#"{"tag_name": "v0.3.2", "html_url": "https://github.com/acme/eave/releases/tag/v0.3.2", "assets": [{"name": "notes.txt", "size": 512, "browser_download_url": "https://github.com/acme/eave/releases/download/v0.3.2/notes.txt"}, {"name": "eave.exe", "size": 2456789, "browser_download_url": "https://github.com/acme/eave/releases/download/v0.3.2/eave.exe"}]}"#;
         assert_eq!(json_extract_string(sample, "tag_name").as_deref(), Some("v0.3.2"));
         assert_eq!(
             json_extract_string(sample, "html_url").as_deref(),
             Some("https://github.com/acme/eave/releases/tag/v0.3.2")
         );
         assert_eq!(
-            json_extract_exe_download_url(sample).as_deref(),
-            Some("https://github.com/acme/eave/releases/download/v0.3.2/eave.exe")
+            json_extract_exe_asset(sample),
+            Some((
+                "https://github.com/acme/eave/releases/download/v0.3.2/eave.exe".to_string(),
+                Some(2_456_789),
+            ))
         );
     }
 

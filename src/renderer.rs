@@ -1,7 +1,4 @@
-﻿use std::fs;
-use std::io;
-use std::mem::ManuallyDrop;
-use std::path::Path;
+﻿use std::mem::ManuallyDrop;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows::core::{w, Interface, Result, HSTRING};
@@ -17,16 +14,16 @@ use windows::Win32::Graphics::Direct2D::{
     ID2D1DeviceContext, ID2D1Factory, ID2D1Factory1, ID2D1Geometry, ID2D1PathGeometry,
     ID2D1RadialGradientBrush, ID2D1RenderTarget, ID2D1SolidColorBrush, ID2D1StrokeStyle, D2D1_ANTIALIAS_MODE_ALIASED,
     D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL,
-    D2D1_BITMAP_BRUSH_PROPERTIES1, D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_CPU_READ,
-    D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_BRUSH_PROPERTIES,
-    D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_CUSTOM, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
-    D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_NO_SNAP, D2D1_ELLIPSE,
-    D2D1_EXTEND_MODE_CLAMP, D2D1_EXTEND_MODE_WRAP, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-    D2D1_GAMMA_2_2,
-    D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR,
-    D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES,
-    D2D1_LINE_JOIN_ROUND, D2D1_MAP_OPTIONS_READ, D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES,
-    D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
+    D2D1_BITMAP_BRUSH_PROPERTIES1, D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET,
+    D2D1_BITMAP_PROPERTIES1,
+    D2D1_BRUSH_PROPERTIES, D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_CUSTOM,
+    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_NO_SNAP,
+    D2D1_ELLIPSE, D2D1_EXTEND_MODE_CLAMP, D2D1_EXTEND_MODE_WRAP,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_GAMMA_2_2, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+    D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1,
+    D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES, D2D1_LINE_JOIN_ROUND,
+    D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES, D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES,
+    D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE,
     D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
 use windows::Win32::Graphics::Direct3D::{
@@ -98,6 +95,7 @@ pub enum CollapsedOsdKind {
     WaterReminder,
     TodoReminder,
     UpdateAvailable,
+    UpdateInstalled,
 }
 
 pub fn interactive_osd_button_rects_at(body_right: f32, notch_h: f32) -> (D2D_RECT_F, D2D_RECT_F) {
@@ -2326,197 +2324,6 @@ impl NotchRenderer {
             self.d2d_context.EndDraw(None, None)?;
             self.swap_chain.Present(1, DXGI_PRESENT(0)).ok()?;
         }
-        Ok(())
-    }
-
-    pub fn render_offscreen_png(
-        &mut self,
-        cfg: &Config,
-        springs: &NotchSprings,
-        state: &EaveViewState<'_>,
-        hover_target: HitTarget,
-        out_path: &Path,
-    ) -> Result<()> {
-        self.sync_album_art(
-            state.media.thumbnail,
-            springs.collapsed_art_mix.value() > 0.01,
-        );
-        self.sync_shelf_icons(state.shelf);
-        self.sync_toast_icon(state.widgets.active_toast.as_ref());
-        self.sync_dynamic_icons(springs, state);
-        self.sync_clock_bitmap(cfg);
-        if springs.mascot_idle_presence.value() > 0.01 {
-            self.sync_eave_mask_brush(springs.height.value.max(24.0));
-        }
-        self.sync_ai_wave(springs);
-
-        let scale = (self.dpi / 96.0).max(0.5);
-        let w_px = (((self.max_w_dips * scale).ceil().max(2.0) as u32) + 1) & !1;
-        let h_px = (self.max_h_dips * scale).ceil().max(2.0) as u32;
-        let size = D2D_SIZE_U {
-            width: w_px,
-            height: h_px,
-        };
-
-        let target_props = D2D1_BITMAP_PROPERTIES1 {
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-            },
-            dpiX: self.dpi,
-            dpiY: self.dpi,
-            bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET,
-            ..Default::default()
-        };
-        let staging_props = D2D1_BITMAP_PROPERTIES1 {
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-            },
-            dpiX: self.dpi,
-            dpiY: self.dpi,
-            bitmapOptions: D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-            ..Default::default()
-        };
-
-        let offscreen = unsafe { self.d2d_context.CreateBitmap(size, None, 0, &target_props)? };
-        let staging = unsafe { self.d2d_context.CreateBitmap(size, None, 0, &staging_props)? };
-
-        let base_w = springs.width.value.max(60.0);
-        let expand = springs.expand.value().clamp(0.0, 1.0);
-        let vol_bounce = if state.collapsed_osd == CollapsedOsdKind::Volume {
-            springs.osd_vol_bounce() * springs.osd_open() * (1.0 - expand)
-        } else {
-            0.0
-        };
-        let cur_w = (base_w + vol_bounce.abs()).max(60.0);
-        let cur_h = (springs.height.value - (vol_bounce.abs() * 0.07).min(1.0)).max(22.0);
-        let ear_r = springs.ear_radius.value.clamp(3.0, cur_w * 0.22);
-        let body_w = (cur_w - ear_r * 2.0).max(24.0);
-        let bottom_r = springs.radius.value.clamp(4.0, body_w.min(cur_h) * 0.48);
-        self.sync_ambient_gradient(springs, state, cur_h, expand);
-        let canvas_cx = (self.max_w_dips * 0.5).round();
-        let pill_left =
-            (canvas_cx - base_w * 0.5) + if vol_bounce < 0.0 { vol_bounce } else { 0.0 };
-        let notch_geo =
-            create_notch_geometry(&self.d2d_factory, pill_left, cur_w, cur_h, ear_r, bottom_r);
-
-        let use_opaque_cleartype = cfg.glass_tint[3] == 255
-            && self.opaque_surface.is_some()
-            && self.opaque_brush.is_some();
-
-        let draw_res = unsafe {
-            if use_opaque_cleartype {
-                let (opaque_surf, opaque_brush) = (
-                    self.opaque_surface.as_ref().unwrap(),
-                    self.opaque_brush.as_ref().unwrap(),
-                );
-                self.d2d_context.SetTarget(opaque_surf);
-                self.d2d_context.SetDpi(self.dpi, self.dpi);
-                self.d2d_context
-                    .SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
-                self.d2d_context.BeginDraw();
-                self.d2d_context.Clear(Some(&D2D1_COLOR_F {
-                    r: 0.0,
-                    g: 0.0,
-                    b: 0.0,
-                    a: 1.0,
-                }));
-                if let Some(geo) = &notch_geo {
-                    self.draw_notch_interior(
-                        cfg, springs, state, hover_target, cur_w, cur_h, ear_r, expand,
-                        canvas_cx, pill_left, geo, true,
-                    );
-                }
-                let p1_res = self.d2d_context.EndDraw(None, None);
-                if p1_res.is_ok() {
-                    self.d2d_context.SetTarget(&offscreen);
-                    self.d2d_context.SetDpi(self.dpi, self.dpi);
-                    self.d2d_context.BeginDraw();
-                    self.d2d_context.Clear(Some(&D2D1_COLOR_F {
-                        r: 0.12,
-                        g: 0.14,
-                        b: 0.34,
-                        a: 1.0,
-                    }));
-                    self.draw_drop_shadow(pill_left, cur_w, cur_h, ear_r, bottom_r, expand);
-                    if let Some(geo) = &notch_geo {
-                        self.d2d_context.FillGeometry(geo, opaque_brush, None);
-                        self.draw_dark_backdrop_highlight(geo, cur_h, springs.dark_bg_border());
-                    }
-                    if springs.ai_card_open.value() > 0.01 {
-                        self.draw_ai_response_card(springs, state, cur_h, canvas_cx);
-                    }
-                    self.d2d_context.EndDraw(None, None)
-                } else {
-                    p1_res
-                }
-            } else {
-                self.d2d_context.SetTarget(&offscreen);
-                self.d2d_context.SetDpi(self.dpi, self.dpi);
-                self.d2d_context
-                    .SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-                self.d2d_context.BeginDraw();
-                self.d2d_context.Clear(Some(&D2D1_COLOR_F {
-                    r: 0.12,
-                    g: 0.14,
-                    b: 0.34,
-                    a: 1.0,
-                }));
-                let scene_res = self.draw_scene_translucent(
-                    cfg,
-                    springs,
-                    state,
-                    hover_target,
-                    cur_w,
-                    cur_h,
-                    ear_r,
-                    bottom_r,
-                    expand,
-                    canvas_cx,
-                    pill_left,
-                    notch_geo.as_ref(),
-                );
-                if springs.ai_card_open.value() > 0.01 {
-                    self.draw_ai_response_card(springs, state, cur_h, canvas_cx);
-                }
-                let end_res = self.d2d_context.EndDraw(None, None);
-                scene_res.and(end_res)
-            }
-        };
-
-        let restore_res = self.bind_cached_swap_chain_target();
-        draw_res?;
-        restore_res?;
-
-        unsafe {
-            staging.CopyFromBitmap(None, &offscreen, None)?;
-            let mapped = staging.Map(D2D1_MAP_OPTIONS_READ)?;
-            let row_bytes = (w_px * 4) as usize;
-            let mut rgba = vec![0u8; (w_px * h_px * 4) as usize];
-            let src_ptr = mapped.bits;
-            for y in 0..h_px as usize {
-                let src_row = std::slice::from_raw_parts(
-                    src_ptr.add(y * mapped.pitch as usize),
-                    row_bytes,
-                );
-                let dst_row = &mut rgba[y * row_bytes..(y + 1) * row_bytes];
-                for (src_px, dst_px) in src_row.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
-                    dst_px[0] = src_px[2];
-                    dst_px[1] = src_px[1];
-                    dst_px[2] = src_px[0];
-                    dst_px[3] = src_px[3];
-                }
-            }
-            let _ = staging.Unmap();
-
-            if let Some(parent) = out_path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            write_rgba_png(out_path, w_px, h_px, &rgba)
-                .map_err(|_| windows::core::Error::from_win32())?;
-        }
-
         Ok(())
     }
 
@@ -7983,6 +7790,85 @@ impl NotchRenderer {
                         "Update",
                         (0.14, 0.56, 1.0),
                         (0.36, 0.80, 1.0),
+                    );
+                }
+                CollapsedOsdKind::UpdateInstalled => {
+                    let badge_s = 32.0;
+                    let badge_l = body_left + 14.0;
+                    let badge_cx = badge_l + badge_s * 0.5;
+                    let badge_r = badge_s * 0.5;
+                    self.draw_radial_glow(badge_cx, cy, 38.0, (0.16, 0.84, 0.44), 0.24 * osd_a);
+                    self.set_color(0.14, 0.78, 0.40, 0.24 * osd_a);
+                    self.d2d_context.FillEllipse(
+                        &D2D1_ELLIPSE {
+                            point: D2D_POINT_2F { x: badge_cx, y: cy },
+                            radiusX: badge_r,
+                            radiusY: badge_r,
+                        },
+                        &self.solid_brush,
+                    );
+                    self.set_color(0.24, 0.90, 0.50, 0.86 * osd_a);
+                    self.d2d_context.DrawEllipse(
+                        &D2D1_ELLIPSE {
+                            point: D2D_POINT_2F { x: badge_cx, y: cy },
+                            radiusX: badge_r,
+                            radiusY: badge_r,
+                        },
+                        &self.solid_brush,
+                        1.65,
+                        None,
+                    );
+                    let stroke = ID2D1Factory::CreateStrokeStyle(
+                        &self.d2d_factory,
+                        &D2D1_STROKE_STYLE_PROPERTIES {
+                            startCap: D2D1_CAP_STYLE_ROUND,
+                            endCap: D2D1_CAP_STYLE_ROUND,
+                            lineJoin: D2D1_LINE_JOIN_ROUND,
+                            ..Default::default()
+                        },
+                        None,
+                    )
+                    .ok();
+                    self.set_color(1.0, 1.0, 1.0, 0.98 * osd_a);
+                    self.d2d_context.DrawLine(
+                        D2D_POINT_2F { x: badge_cx - 5.2, y: cy + 0.4 },
+                        D2D_POINT_2F { x: badge_cx - 1.4, y: cy + 4.4 },
+                        &self.solid_brush,
+                        2.3,
+                        stroke.as_ref(),
+                    );
+                    self.d2d_context.DrawLine(
+                        D2D_POINT_2F { x: badge_cx - 1.4, y: cy + 4.4 },
+                        D2D_POINT_2F { x: badge_cx + 5.8, y: cy - 4.0 },
+                        &self.solid_brush,
+                        2.3,
+                        stroke.as_ref(),
+                    );
+
+                    let txt_l = badge_l + badge_s + 11.0;
+                    let txt_r = (body_right - 14.0).max(txt_l + 40.0);
+                    let sub = format!("Now running Eave v{}", crate::updater::CURRENT_VERSION);
+                    self.draw_text(
+                        "Update installed",
+                        &self.fmt_osd_label,
+                        &D2D_RECT_F {
+                            left: txt_l,
+                            top: cy - 17.0,
+                            right: txt_r,
+                            bottom: cy + 1.0,
+                        },
+                        (0.98, 0.98, 0.99, osd_a),
+                    );
+                    self.draw_text(
+                        &sub,
+                        &self.fmt_artist,
+                        &D2D_RECT_F {
+                            left: txt_l,
+                            top: cy + 1.0,
+                            right: txt_r,
+                            bottom: cy + 17.0,
+                        },
+                        (0.62, 0.66, 0.70, osd_a),
                     );
                 }
             }
@@ -16426,84 +16312,6 @@ fn format_remaining_mm_ss(duration_secs: f64, position_secs: f64) -> String {
     format!("-{m:02}:{s:02}")
 }
 
-fn write_rgba_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> io::Result<()> {
-    let stride = (width * 4) as usize;
-    let mut raw = Vec::with_capacity((stride + 1) * height as usize);
-    for y in 0..height as usize {
-        raw.push(0u8);
-        raw.extend_from_slice(&rgba[y * stride..(y + 1) * stride]);
-    }
-
-    let mut zlib = Vec::with_capacity(raw.len() + (raw.len() / 65535 + 1) * 5 + 6);
-    zlib.push(0x78);
-    zlib.push(0x01);
-
-    let mut offset = 0usize;
-    while offset < raw.len() {
-        let chunk_len = (raw.len() - offset).min(65535);
-        let is_final = if offset + chunk_len == raw.len() { 1u8 } else { 0u8 };
-        zlib.push(is_final);
-        let len_u16 = chunk_len as u16;
-        let nlen_u16 = !len_u16;
-        zlib.extend_from_slice(&len_u16.to_le_bytes());
-        zlib.extend_from_slice(&nlen_u16.to_le_bytes());
-        zlib.extend_from_slice(&raw[offset..offset + chunk_len]);
-        offset += chunk_len;
-    }
-
-    let adler = adler32(&raw);
-    zlib.extend_from_slice(&adler.to_be_bytes());
-
-    let mut png = Vec::with_capacity(zlib.len() + 64);
-    png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
-
-    let mut ihdr = [0u8; 13];
-    ihdr[0..4].copy_from_slice(&width.to_be_bytes());
-    ihdr[4..8].copy_from_slice(&height.to_be_bytes());
-    ihdr[8] = 8;
-    ihdr[9] = 6;
-    ihdr[10] = 0;
-    ihdr[11] = 0;
-    ihdr[12] = 0;
-    push_png_chunk(&mut png, b"IHDR", &ihdr);
-    push_png_chunk(&mut png, b"IDAT", &zlib);
-    push_png_chunk(&mut png, b"IEND", &[]);
-
-    fs::write(path, &png)
-}
-
-fn push_png_chunk(out: &mut Vec<u8>, tag: &[u8; 4], data: &[u8]) {
-    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
-    let start = out.len();
-    out.extend_from_slice(tag);
-    out.extend_from_slice(data);
-    let crc = crc32(&out[start..]);
-    out.extend_from_slice(&crc.to_be_bytes());
-}
-
-fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc = 0xFFFF_FFFFu32;
-    for &b in bytes {
-        crc ^= b as u32;
-        for _ in 0..8 {
-            let mask = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-        }
-    }
-    !crc
-}
-
-fn adler32(bytes: &[u8]) -> u32 {
-    const MOD: u32 = 65521;
-    let mut a = 1u32;
-    let mut b = 0u32;
-    for &byte in bytes {
-        a = (a + byte as u32) % MOD;
-        b = (b + a) % MOD;
-    }
-    (b << 16) | a
-}
-
 fn shelf_icon_hash(item: &ShelfItem) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in item.path.as_bytes() {
@@ -16940,19 +16748,6 @@ mod tests {
         assert_eq!(format_mm_ss(65.9), "01:05");
         assert_eq!(format_remaining_mm_ss(120.0, 45.0), "-01:15");
         assert_eq!(format_remaining_mm_ss(0.0, 0.0), "-00:00");
-    }
-
-    #[test]
-    fn png_writer_produces_valid_signature_and_ihdr() {
-        let mut dir = std::env::temp_dir();
-        dir.push("eave_png_test.png");
-        let rgba = [255u8, 0, 128, 255, 0, 255, 64, 255, 10, 20, 30, 255, 40, 50, 60, 255];
-        write_rgba_png(&dir, 2, 2, &rgba).expect("write png");
-        let bytes = fs::read(&dir).expect("read png");
-        let _ = fs::remove_file(&dir);
-        assert_eq!(&bytes[0..8], b"\x89PNG\r\n\x1a\n");
-        assert_eq!(&bytes[12..16], b"IHDR");
-        assert_eq!(&bytes[bytes.len() - 8..bytes.len() - 4], b"IEND");
     }
 
     #[test]
