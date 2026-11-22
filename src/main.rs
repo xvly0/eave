@@ -430,7 +430,7 @@ fn run() -> windows::core::Result<()> {
     let update_checker = updater::UpdateChecker::new(window.hwnd());
     let app_started = Instant::now();
     let mut pending_update_installed_osd = just_updated;
-    let mut auto_update_checked = false;
+    let mut last_auto_update_check: Option<Instant> = None;
     let mut update_osd_shown = false;
     let mut last_seen_update_status = updater::UpdateStatus::Idle;
     let mut ai_card_visible = false;
@@ -2508,65 +2508,70 @@ fn run() -> windows::core::Result<()> {
                     }
                 }
             }
-            if pending_update_installed_osd && app_started.elapsed() >= Duration::from_millis(750) {
-                pending_update_installed_osd = false;
-                osd_monitors::play_eave_chime();
-                enqueue_or_show_osd(
-                    QueuedOsd::UpdateInstalled,
+            if settings_win.is_open() {
+                settings_win.sync_snapshot(build_settings_snapshot(
                     &cfg,
-                    Instant::now(),
-                    hover_sm.expanded,
-                    &mut widgets,
-                    &mut active_osd,
-                    &mut osd_deadline,
-                    &mut osd_queue,
-                    &mut springs,
-                );
-                force_render = true;
+                    &pomodoro,
+                    &water,
+                    &todo,
+                    &shelf_store,
+                    update_checker.status(),
+                ));
             }
-            if !auto_update_checked
-                && cfg.auto_check_updates
-                && app_started.elapsed() >= Duration::from_secs(4)
-            {
-                auto_update_checked = true;
-                update_checker.check_async(&cfg.update_repo);
+        }
+
+        if pending_update_installed_osd && app_started.elapsed() >= Duration::from_millis(750) {
+            pending_update_installed_osd = false;
+            osd_monitors::play_eave_chime();
+            enqueue_or_show_osd(
+                QueuedOsd::UpdateInstalled,
+                &cfg,
+                Instant::now(),
+                hover_sm.expanded,
+                &mut widgets,
+                &mut active_osd,
+                &mut osd_deadline,
+                &mut osd_queue,
+                &mut springs,
+            );
+            force_render = true;
+        }
+        let should_auto_check = cfg.auto_check_updates
+            && match last_auto_update_check {
+                None => app_started.elapsed() >= Duration::from_secs(3),
+                Some(prev) => prev.elapsed() >= Duration::from_secs(3600),
+            };
+        if should_auto_check {
+            if last_auto_update_check.is_some() {
+                update_osd_shown = false;
             }
-            let cur_upd = update_checker.status();
-            let upd_changed = cur_upd != last_seen_update_status;
-            if upd_changed {
-                if !update_osd_shown {
-                    if let updater::UpdateStatus::Available { ref version, .. } = cur_upd {
-                        update_osd_shown = true;
-                        has_notification = true;
-                        osd_monitors::play_eave_chime();
-                        enqueue_or_show_osd(
-                            QueuedOsd::UpdateAvailable {
-                                version: version.clone(),
-                            },
-                            &cfg,
-                            Instant::now(),
-                            hover_sm.expanded,
-                            &mut widgets,
-                            &mut active_osd,
-                            &mut osd_deadline,
-                            &mut osd_queue,
-                            &mut springs,
-                        );
-                        force_render = true;
-                    }
-                }
-                last_seen_update_status = cur_upd;
-                if settings_win.is_open() {
-                    settings_win.sync_snapshot(build_settings_snapshot(
+            last_auto_update_check = Some(Instant::now());
+            update_checker.check_async(&cfg.update_repo);
+        }
+        let cur_upd = update_checker.status();
+        if cur_upd != last_seen_update_status {
+            if !update_osd_shown {
+                if let updater::UpdateStatus::Available { ref version, .. } = cur_upd {
+                    update_osd_shown = true;
+                    has_notification = true;
+                    osd_monitors::play_eave_chime();
+                    enqueue_or_show_osd(
+                        QueuedOsd::UpdateAvailable {
+                            version: version.clone(),
+                        },
                         &cfg,
-                        &pomodoro,
-                        &water,
-                        &todo,
-                        &shelf_store,
-                        update_checker.status(),
-                    ));
+                        Instant::now(),
+                        hover_sm.expanded,
+                        &mut widgets,
+                        &mut active_osd,
+                        &mut osd_deadline,
+                        &mut osd_queue,
+                        &mut springs,
+                    );
+                    force_render = true;
                 }
             }
+            last_seen_update_status = cur_upd;
             if settings_win.is_open() {
                 settings_win.sync_snapshot(build_settings_snapshot(
                     &cfg,
