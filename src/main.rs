@@ -1832,9 +1832,13 @@ fn run() -> windows::core::Result<()> {
                             }
                         }
                         HitTarget::LyricsButton => {
-                            lyrics_open = !lyrics_open;
-                            if page == NotchPage::Music && lyrics_open {
-                                dock_hovered = false;
+                            if lyrics_open {
+                                lyrics_open = false;
+                            } else if snap.has_session {
+                                lyrics_open = true;
+                                if page == NotchPage::Music {
+                                    dock_hovered = false;
+                                }
                             }
                         }
                         HitTarget::LyricSeek(line_idx) => {
@@ -2836,6 +2840,10 @@ fn run() -> windows::core::Result<()> {
         } else {
             LyricLinePair::default()
         };
+        if lyrics_open && !snap.has_session {
+            lyrics_open = false;
+            force_render = true;
+        }
         let lyrics_active = page == NotchPage::Music && lyrics_open;
         if lyrics_active {
             dock_hovered = false;
