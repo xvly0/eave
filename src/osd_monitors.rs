@@ -1456,6 +1456,11 @@ enum NetLinkState {
 pub struct NetworkMonitor {
     last_state: NetLinkState,
     last_poll: Instant,
+    offline_streak: u8,
+}
+
+fn is_generic_wifi_name(ssid: &str) -> bool {
+    ssid.is_empty() || ssid.eq_ignore_ascii_case("Wi-Fi")
 }
 
 impl NetworkMonitor {
@@ -1463,6 +1468,7 @@ impl NetworkMonitor {
         Self {
             last_state: query_network_state(),
             last_poll: Instant::now(),
+            offline_streak: 0,
         }
     }
 
@@ -1472,9 +1478,45 @@ impl NetworkMonitor {
         }
         self.last_poll = Instant::now();
         let cur = query_network_state();
-        if cur == self.last_state {
+        self.transition(cur)
+    }
+
+    fn transition(&mut self, cur: NetLinkState) -> Option<NetworkEvent> {
+        if matches!(cur, NetLinkState::Offline) && !matches!(self.last_state, NetLinkState::Offline)
+        {
+            self.offline_streak = self.offline_streak.saturating_add(1);
+            if self.offline_streak < 2 {
+                return None;
+            }
+        } else {
+            self.offline_streak = 0;
+        }
+
+        if let (
+            NetLinkState::Wifi {
+                ssid: prev_ssid,
+                signal_pct: prev_sig,
+            },
+            NetLinkState::Wifi {
+                ssid: cur_ssid,
+                signal_pct: cur_sig,
+            },
+        ) = (&mut self.last_state, &cur)
+        {
+            if *prev_ssid == *cur_ssid
+                || is_generic_wifi_name(prev_ssid)
+                || is_generic_wifi_name(cur_ssid)
+            {
+                if is_generic_wifi_name(prev_ssid) && !is_generic_wifi_name(cur_ssid) {
+                    *prev_ssid = cur_ssid.clone();
+                }
+                *prev_sig = *cur_sig;
+                return None;
+            }
+        } else if self.last_state == cur {
             return None;
         }
+
         let prev = std::mem::replace(&mut self.last_state, cur.clone());
         match (prev, cur) {
             (_, NetLinkState::Wifi { ssid, signal_pct }) => Some(NetworkEvent {
@@ -1764,5 +1806,54 @@ mod tests {
             format_mic_app_name("Microsoft.WindowsSoundRecorder_8wekyb3d8bbwe", false),
             "Voice Recorder"
         );
+    }
+
+    #[test]
+    fn wifi_signal_fluctuations_and_fallback_do_not_spam_osd() {
+        let mut mon = NetworkMonitor {
+            last_state: NetLinkState::Wifi {
+                ssid: "HomeWiFi".to_string(),
+                signal_pct: 80,
+            },
+            last_poll: Instant::now(),
+            offline_streak: 0,
+        };
+        assert_eq!(
+            mon.transition(NetLinkState::Wifi {
+                ssid: "HomeWiFi".to_string(),
+                signal_pct: 74,
+            }),
+            None
+        );
+        assert_eq!(
+            mon.transition(NetLinkState::Wifi {
+                ssid: "Wi-Fi".to_string(),
+                signal_pct: 85,
+            }),
+            None
+        );
+        // Single-tick Offline glitch is ignored
+        assert_eq!(mon.transition(NetLinkState::Offline), None);
+        assert_eq!(
+            mon.transition(NetLinkState::Wifi {
+                ssid: "HomeWiFi".to_string(),
+                signal_pct: 78,
+            }),
+            None
+        );
+        // Switching to a different SSID triggers connected event
+        let ev = mon
+            .transition(NetLinkState::Wifi {
+                ssid: "Office5G".to_string(),
+                signal_pct: 92,
+            })
+            .expect("ssid switch");
+        assert!(ev.connected);
+        assert_eq!(ev.name, "Office5G");
+        // Two consecutive Offline polls trigger disconnect
+        assert_eq!(mon.transition(NetLinkState::Offline), None);
+        let disc = mon.transition(NetLinkState::Offline).expect("offline");
+        assert!(!disc.connected);
+        assert_eq!(disc.name, "Office5G");
     }
 }

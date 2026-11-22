@@ -1,6 +1,6 @@
 [package]
 name = "eave"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Eave — Lightweight native Windows Dynamic Island companion in pure Rust + Win32/Composition/D2D1"
 
