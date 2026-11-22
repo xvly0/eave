@@ -369,6 +369,7 @@ fn run() -> windows::core::Result<()> {
     let mut osd_deadline: Option<Instant> = None;
     let mut osd_queue: VecDeque<QueuedOsd> = VecDeque::with_capacity(6);
     let mut has_notification = false;
+    let mut notif_seen_since: Option<Instant> = None;
     let mut last_art_rev: u64 = 0;
     let mut last_lyric_track_key = String::new();
     let mut song_rgb: (f32, f32, f32) = (0.22, 0.47, 0.81);
@@ -1791,6 +1792,7 @@ fn run() -> windows::core::Result<()> {
                         }
                         HitTarget::BellButton => {
                             has_notification = false;
+                            notif_seen_since = None;
                         }
                         HitTarget::DockZone => {}
                         HitTarget::DockPage(target_page) => {
@@ -3126,6 +3128,16 @@ fn run() -> windows::core::Result<()> {
             }
         }
         springs.set_lyric_started(!frame_lyric_pair.pre_start && frame_lyric_pair.has_synced);
+        if hover_sm.expanded && has_notification {
+            let started = *notif_seen_since.get_or_insert(now);
+            if now.saturating_duration_since(started) >= Duration::from_millis(2500) {
+                has_notification = false;
+                notif_seen_since = None;
+                force_render = true;
+            }
+        } else {
+            notif_seen_since = None;
+        }
         springs.set_has_notification(has_notification);
         springs.set_shelf_zone_hovered(shelf_zone_hovered);
         springs.sync_content_transitions(
